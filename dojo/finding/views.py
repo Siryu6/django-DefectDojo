@@ -33,6 +33,7 @@ from dojo.utils import (
     reopen_external_issue,
     do_false_positive_history,
     match_finding_to_existing_findings,
+    template_replace_placeholder,
     get_page_items_and_count,
 )
 import copy
@@ -126,6 +127,9 @@ from dojo.finding.queries import get_authorized_findings
 from dojo.test.queries import get_authorized_tests
 
 JFORM_PUSH_TO_JIRA_MESSAGE = "jform.push_to_jira: %s"
+
+FINDING_TEMPLATE_PLACEHOLDER = "{{original}}"
+
 
 logger = logging.getLogger(__name__)
 
@@ -2224,7 +2228,7 @@ def export_templates_to_json(request):
 
 def apply_cwe_mitigation(apply_to_findings, template, update=True):
     count = 0
-    if apply_to_findings and template.template_match and template.cwe is not None:
+    if apply_to_findings and template.template_match and template.cwe or template.list_replace is not None:
         # Update active, verified findings with the CWE template
         # If CWE only match only update issues where there isn't a CWE + Title match
         if template.template_match_title:
@@ -2238,6 +2242,28 @@ def apply_cwe_mitigation(apply_to_findings, template, update=True):
                 impact=template.impact,
                 references=template.references,
             )
+        elif template.list_replace:
+            for entry in template.findings_to_replace.split(';;'):
+                to_update = Finding.objects.filter(
+                    active=True,
+                    title=entry,
+                )
+                for finding in to_update.all():
+                    finding.title = template_replace_placeholder(finding.title, template.title, FINDING_TEMPLATE_PLACEHOLDER),
+                    finding.title = finding.title[0]  # actually don't know why I get a Tuple
+                    if template.cwe and finding.cwe is None:
+                        finding.cwe = template.cwe
+                    finding.severity = template_replace_placeholder(finding.severity, template.severity, FINDING_TEMPLATE_PLACEHOLDER)
+                    finding.cvssv3 = template_replace_placeholder(finding.cvssv3, template.cvssv3, FINDING_TEMPLATE_PLACEHOLDER)
+                    finding.description = template_replace_placeholder(finding.description, template.description, FINDING_TEMPLATE_PLACEHOLDER)
+                    finding.mitigation = template_replace_placeholder(finding.mitigation, template.mitigation, FINDING_TEMPLATE_PLACEHOLDER)
+                    finding.impact = template_replace_placeholder(finding.impact, template.impact, FINDING_TEMPLATE_PLACEHOLDER)
+                    finding.references = template_replace_placeholder(finding.references, template.references, FINDING_TEMPLATE_PLACEHOLDER)
+                    # Combining all template & finding tags and avoid duplicate
+                    finding.tags.set_tag_list(list(set(finding.tags.get_tag_list()) | set(template.tags.get_tag_list())))
+                    finding.tags.save()
+                    finding.save()
+                    count += 1
         else:
             finding_templates = Finding_Template.objects.filter(
                 cwe=template.cwe, template_match=True, template_match_title=True
